@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Spatial Digital Twin | Multimodal Activity Tracker</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background-color: #0b0e14;
+            color: #e0e6ed;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+        }
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+        .hud-panel {
+            position: absolute;
+            z-index: 10;
+            background: rgba(16, 22, 34, 0.88);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(0, 220, 255, 0.35);
+            border-radius: 8px;
+            padding: 16px 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+        }
+        #top-hud {
+            top: 20px;
+            left: 20px;
+            min-width: 340px;
+        }
+        #metrics-hud {
+            top: 20px;
+            right: 20px;
+            min-width: 300px;
+        }
+        #controls-hud {
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 13px;
+            color: #8b9bb4;
+        }
+        .title {
+            font-size: 13px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #00e5ff;
+            margin-bottom: 8px;
+        }
+        .badge {
+            display: inline-block;
+            font-size: 19px;
+            font-weight: 800;
+            margin-bottom: 8px;
+            color: #00ff88;
+        }
+        .row {
+            display: flex;
+            justify-content: space-between;
+            margin: 6px 0;
+            font-size: 14px;
+        }
+        .label { color: #8fa0b5; }
+        .val { font-weight: 600; color: #fff; }
+        .bar-bg {
+            width: 100%;
+            height: 6px;
+            background: #1c2638;
+            border-radius: 3px;
+            overflow: hidden;
+            margin-top: 4px;
+            margin-bottom: 8px;
+        }
+        .bar-fill {
+            height: 100%;
+            width: 0%;
+            background: #00e5ff;
+            transition: width 0.15s ease-out;
+        }
+        .status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #00ff88;
+            margin-right: 6px;
+            box-shadow: 0 0 8px #00ff88;
+        }
+        .source-pill {
+            display: inline-block;
+            padding: 3px 8px;
+            font-size: 11px;
+            font-weight: 700;
+            border-radius: 4px;
+            margin-top: 4px;
+            background: rgba(0, 229, 255, 0.15);
+            color: #00e5ff;
+            border: 1px solid #00e5ff;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div id="top-hud" class="hud-panel">
+        <div class="title"><span class="status-dot"></span>Multimodal 3D Digital Twin</div>
+        <div id="act-badge" class="badge">INITIALIZING...</div>
+        <div><span id="source-tag" class="source-pill">CONNECTING...</span></div>
+        <div class="row" style="margin-top:10px;"><span class="label">Posture:</span><span id="posture-val" class="val">--</span></div>
+        <div class="row"><span class="label">Elevation Height:</span><span id="elev-val" class="val">0%</span></div>
+        <div class="bar-bg"><div id="elev-bar" class="bar-fill"></div></div>
+    </div>
+
+    <div id="metrics-hud" class="hud-panel">
+        <div class="title">Biometrics & RuView RF</div>
+        <div class="row"><span class="label">Attention Focus:</span><span id="att-val" class="val">--%</span></div>
+        <div class="bar-bg"><div id="att-bar" class="bar-fill" style="background:#00ff88;"></div></div>
+        <div class="row"><span class="label">RuView Respiration:</span><span id="resp-val" class="val">-- RPM</span></div>
+        <div class="row"><span class="label">Burnout Risk:</span><span id="burnout-val" class="val">--%</span></div>
+        <div class="row"><span class="label">Sedentary Time:</span><span id="seat-val" class="val">-- mins</span></div>
+    </div>
+
+    <div id="controls-hud" class="hud-panel">
+        Left-click + Drag to Rotate 3D Room | Right-click to Pan | Scroll to Zoom
+    </div>
+
+    <script>
+        // --- 1. Three.js Scene Setup ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x0b0e14, 0.08);
+
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(1.9, 1.4, 2.7);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+        container.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.target.set(0, 0.1, 0.1);
+
+        // --- 2. Lighting & Environment ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0x00e5ff, 1.3);
+        dirLight.position.set(3, 5, 2);
+        scene.add(dirLight);
+
+        const pointLight = new THREE.PointLight(0xff0077, 1.6, 10);
+        pointLight.position.set(-2, 2, -2);
+        scene.add(pointLight);
+
+        // Ground Grid
+        const grid = new THREE.GridHelper(6, 24, 0x00e5ff, 0x1f2c3f);
+        grid.position.y = -0.75;
+        scene.add(grid);
+
+        // --- 3. Virtual Furniture (3D Desk & Chair) ---
+        const deskGeo = new THREE.BoxGeometry(1.2, 0.04, 0.6);
+        const deskMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, metalness: 0.2, roughness: 0.8 });
+        const desk = new THREE.Mesh(deskGeo, deskMat);
+        desk.position.set(0, -0.15, 0.45);
+        scene.add(desk);
+
+        const legGeo = new THREE.CylinderGeometry(0.02, 0.02, 0.6);
+        const legMat = new THREE.MeshStandardMaterial({ color: 0x0f172a });
+        const legOffsets = [[-0.55, 0.25], [0.55, 0.25], [-0.55, -0.25], [0.55, -0.25]];
+        legOffsets.forEach(([lx, lz]) => {
+            const leg = new THREE.Mesh(legGeo, legMat);
+            leg.position.set(lx, -0.45, 0.45 + lz);
+            scene.add(leg);
+        });
+
+        const chairSeatGeo = new THREE.BoxGeometry(0.45, 0.04, 0.45);
+        const chairMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.6 });
+        const chair = new THREE.Mesh(chairSeatGeo, chairMat);
+        chair.position.set(0, -0.42, -0.05);
+        scene.add(chair);
+
+        // --- 4. 3D Skeletal Avatar Rig ---
+        const jointMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0x00e5ff, emissiveIntensity: 0.8 });
+        const boneMat = new THREE.MeshStandardMaterial({ color: 0x00e5ff, roughness: 0.3 });
+        
+        const joints = [];
+        const jointGeo = new THREE.SphereGeometry(0.038, 16, 16);
+        for (let i = 0; i < 33; i++) {
+            const jMesh = new THREE.Mesh(jointGeo, jointMat);
+            scene.add(jMesh);
+            joints.push(jMesh);
+        }
+
+        const boneConnections = [
+            [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
+            [11, 23], [12, 24], [23, 24], [23, 25], [25, 27],
+            [24, 26], [26, 28], [0, 11], [0, 12]
+        ];
+        const boneLines = [];
+        boneConnections.forEach(() => {
+            const lineGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+            const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0x00e5ff, linewidth: 3 }));
+            scene.add(line);
+            boneLines.push(line);
+        });
+
+        // RF Doppler Particle Cloud (DensePose multi-path scatter)
+        const cloudGeo = new THREE.BufferGeometry();
+        const cloudPositions = new Float32Array(50 * 3);
+        cloudGeo.setAttribute('position', new THREE.BufferAttribute(cloudPositions, 3));
+        const cloudMat = new THREE.PointsMaterial({ color: 0x00e5ff, size: 0.04, transparent: true, opacity: 0.7 });
+        const rfPoints = new THREE.Points(cloudGeo, cloudMat);
+        scene.add(rfPoints);
+
+        // WiFi RF Ripple Waves
+        const waveGeo = new THREE.RingGeometry(0.1, 0.12, 32);
+        const waveMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff, side: THREE.DoubleSide, transparent: true, opacity: 0.7 });
+        const waveRing = new THREE.Mesh(waveGeo, waveMat);
+        waveRing.rotation.x = Math.PI / 2;
+        waveRing.position.set(1.4, -0.74, 0.8);
+        scene.add(waveRing);
+
+        // --- 5. Real-time WebSocket Connection ---
+        const wsUrl = `ws://${window.location.host}/ws`;
+        let ws;
+
+        function connectWS() {
+            ws = new WebSocket(wsUrl);
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                updateTelemetryHUD(data);
+                updateSkeleton(data);
+            };
+            ws.onclose = () => { setTimeout(connectWS, 1500); };
+        }
+        connectWS();
+
+        function updateTelemetryHUD(d) {
+            document.getElementById('act-badge').innerText = d.activity || 'IDLE';
+            document.getElementById('source-tag').innerText = d.source || 'SENSING: WiFi CSI DensePose';
+            document.getElementById('posture-val').innerText = d.posture || '--';
+            document.getElementById('elev-val').innerText = (d.elevation || 0) + '%';
+            document.getElementById('elev-bar').style.width = (d.elevation || 0) + '%';
+
+            document.getElementById('att-val').innerText = (d.attention || 0) + '%';
+            document.getElementById('att-bar').style.width = (d.attention || 0) + '%';
+            document.getElementById('resp-val').innerText = (d.respiration || 0) + ' RPM';
+            document.getElementById('burnout-val').innerText = (d.burnout || 0) + '%';
+            document.getElementById('seat-val').innerText = (d.sitting_mins || 0) + ' mins';
+        }
+
+        function updateSkeleton(d) {
+            if (!d.landmarks || d.landmarks.length === 0) {
+                return;
+            }
+
+            const isWiFi = d.source && d.source.includes('WiFi');
+            const boneCol = isWiFi ? 0x00e5ff : 0x00ff88;
+            const jointCol = isWiFi ? 0xffea00 : 0xffffff;
+
+            jointMat.color.setHex(jointCol);
+            jointMat.emissive.setHex(boneCol);
+
+            // Position joints
+            const yOff = d.posture && d.posture.includes('STAND') ? 0.25 : -0.10;
+            d.landmarks.forEach((pt, i) => {
+                if (joints[i]) {
+                    if (isWiFi) {
+                        joints[i].position.set(pt.x, pt.y, pt.z);
+                    } else {
+                        joints[i].position.set(pt.x, -pt.y + yOff, -pt.z);
+                    }
+                    joints[i].visible = true;
+                }
+            });
+
+            // Connect bones
+            boneConnections.forEach(([i1, i2], idx) => {
+                if (joints[i1] && joints[i2]) {
+                    const p1 = joints[i1].position;
+                    const p2 = joints[i2].position;
+                    const posAttr = boneLines[idx].geometry.attributes.position;
+                    posAttr.setXYZ(0, p1.x, p1.y, p1.z);
+                    posAttr.setXYZ(1, p2.x, p2.y, p2.z);
+                    posAttr.needsUpdate = true;
+                    boneLines[idx].material.color.setHex(boneCol);
+                    boneLines[idx].visible = true;
+                }
+            });
+
+            // Update RF Particle Cloud
+            if (d.rf_cloud && d.rf_cloud.length > 0) {
+                const pos = cloudGeo.attributes.position.array;
+                d.rf_cloud.forEach((pt, idx) => {
+                    if (idx < 50) {
+                        pos[idx * 3] = pt[0];
+                        pos[idx * 3 + 1] = pt[1];
+                        pos[idx * 3 + 2] = pt[2];
+                    }
+                });
+                cloudGeo.attributes.position.needsUpdate = true;
+                rfPoints.visible = true;
+            } else {
+                rfPoints.visible = false;
+            }
+        }
+
+        // --- 6. Render Loop ---
+        let clock = new THREE.Clock();
+        function animate() {
+            requestAnimationFrame(animate);
+            const elapsed = clock.getElapsedTime();
+            
+            const s = 1.0 + (elapsed * 1.5) % 3.0;
+            waveRing.scale.set(s, s, s);
+            waveMat.opacity = Math.max(0, 0.8 - (s / 4.0));
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>

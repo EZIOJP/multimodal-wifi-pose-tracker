@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.log
+models/Unlimited-OCR/
+*.safetensors
+*.png
+.temp_ocr_out/

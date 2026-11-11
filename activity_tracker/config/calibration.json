@@ -1,0 +1,17 @@
+{
+    "sitting_shoulder_y": 0.58,
+    "standing_shoulder_y": 0.3,
+    "shoulder_elevation_span": 0.28,
+    "sitting_shoulder_width": 0.32,
+    "standing_shoulder_width": 0.26,
+    "neutral_head_yaw": 0.0,
+    "neutral_head_pitch": 0.0,
+    "neutral_head_roll": 0.0,
+    "blink_sensitivity": 0.55,
+    "sleep_trigger_seconds": 2.5,
+    "mouth_hand_dist_threshold": 0.13,
+    "rf_noise_floor": 0.04,
+    "rf_baseline_rpm": 16.0,
+    "is_calibrated": false,
+    "calibrated_timestamp": ""
+}
