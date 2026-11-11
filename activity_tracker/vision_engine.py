@@ -1,10 +1,6 @@
 """
 High-Precision Vision Engine for Pose, Multi-Factor Sit/Stand, Attention, and Actions.
-Features:
-- Multi-factor Sit/Stand Classifier (Shoulder elevation, perspective upward pitch, scale ratio, top-edge persistence)
-- Rolling auto-calibrating sitting baseline
-- MediaPipe Face Blendshapes (Eye blink, jaw chew/yawn)
-- Hand-to-mouth eating trajectory tracking
+Integrated with 1-Euro Adaptive Filter and Ensemble Sit/Stand Classifier.
 """
 
 import os
@@ -20,6 +16,7 @@ from typing import Optional, List, Dict, Tuple, Any
 from collections import deque
 
 from activity_tracker.calibrator import CalibrationProfile
+from activity_tracker.accuracy_enhancer import EnsembleSitStandClassifier, OneEuroFilter
 
 @dataclass
 class VisionMetrics:
@@ -68,21 +65,16 @@ class VisionTracker:
         self.profile = profile if profile is not None else CalibrationProfile.load()
         self._init_models()
         
-        # Continuous Auto-Baseline Tracker
-        self.rolling_sitting_samples = deque(maxlen=40)
-        self.auto_baseline_locked = False
-        self.sitting_baseline_y = self.profile.sitting_shoulder_y
-        self.sitting_baseline_width = self.profile.sitting_shoulder_width
-        
-        # Debouncing & Velocity
-        self.prev_shoulder_y = self.sitting_baseline_y
+        # High-Accuracy Ensemble Sit/Stand Engine
+        self.ensemble_classifier = EnsembleSitStandClassifier()
+        if self.profile.is_calibrated:
+            self.ensemble_classifier.sitting_baseline_y = self.profile.sitting_shoulder_y
+            self.ensemble_classifier.is_calibrated = True
+
+        self.prev_shoulder_y = self.ensemble_classifier.sitting_baseline_y
         self.shoulder_vel_y = 0.0
         self.prev_time = time.time()
         
-        self.standing_score_history = deque(maxlen=5)
-        self.current_posture = "SITTING"
-        
-        # Blink & Attention
         self.eyes_closed_start: Optional[float] = None
         self.chew_cycles = 0
         self.prev_jaw_open = 0.0
@@ -112,12 +104,11 @@ class VisionTracker:
         self.gesture_detector = vision.GestureRecognizer.create_from_options(gesture_options)
 
     def quick_calibrate_sitting(self, cur_shoulder_y: float):
-        self.sitting_baseline_y = cur_shoulder_y
+        self.ensemble_classifier.sitting_baseline_y = cur_shoulder_y
+        self.ensemble_classifier.is_calibrated = True
         self.profile.sitting_shoulder_y = cur_shoulder_y
-        self.profile.shoulder_elevation_span = max(0.12, cur_shoulder_y - 0.28)
         self.profile.is_calibrated = True
         self.profile.save()
-        self.rolling_sitting_samples.clear()
 
     def process_frame(self, frame_bgr: np.ndarray) -> Tuple[VisionMetrics, dict]:
         now = time.time()
@@ -136,14 +127,13 @@ class VisionTracker:
             "gaze_vector": None
         }
         
-        # --- 1. Pose Analysis (Sit vs Stand) ---
+        # --- 1. Pose Analysis ---
         pose_res = self.pose_detector.detect(mp_image)
         has_pose = bool(pose_res.pose_landmarks and len(pose_res.pose_landmarks) > 0)
         
         cur_shoulder_y = 0.55
-        cur_width = 0.30
+        cur_width = 0.32
         head_y = 0.35
-        head_pitch_detected = 0.0
 
         if has_pose:
             metrics.is_present = True
@@ -167,20 +157,9 @@ class VisionTracker:
             sh_px_r = (int(right_sh.x * w), int(right_sh.y * h))
             debug_draw["shoulders"] = (sh_px_l, sh_px_r)
             
-            # Vertical velocity calculation (negative = moving UP)
             vel = (cur_shoulder_y - self.prev_shoulder_y) / dt
             self.shoulder_vel_y = 0.7 * self.shoulder_vel_y + 0.3 * vel
             self.prev_shoulder_y = cur_shoulder_y
-            
-            # Auto-calibrate sitting baseline over first 25 resting frames
-            if not self.auto_baseline_locked and not self.profile.is_calibrated:
-                if abs(self.shoulder_vel_y) < 0.15 and cur_shoulder_y > 0.40:
-                    self.rolling_sitting_samples.append(cur_shoulder_y)
-                    if len(self.rolling_sitting_samples) >= 20:
-                        self.sitting_baseline_y = float(np.median(self.rolling_sitting_samples))
-                        self.sitting_baseline_width = cur_width
-                        self.auto_baseline_locked = True
-                        print(f"[Vision Engine] Auto-learned sitting baseline shoulder Y = {self.sitting_baseline_y:.3f}")
 
         # --- 2. Face, Blendshapes, and Attention ---
         face_res = self.face_detector.detect(mp_image)
@@ -188,6 +167,7 @@ class VisionTracker:
         mouth_center = None
         ear_left = None
         ear_right = None
+        head_pitch_detected = 0.0
         
         if has_face:
             metrics.is_present = True
@@ -251,54 +231,20 @@ class VisionTracker:
             self.smooth_attention = 0.85 * self.smooth_attention + 0.15 * raw_attention
             metrics.attention_score = round(self.smooth_attention, 1)
 
-        # --- 3. Robust Multi-Factor Sit vs Stand Classifier ---
+        # --- 3. Ensemble Sit vs Stand Decision ---
         if metrics.is_present:
-            # Factor 1: Shoulder vertical elevation from sitting baseline
-            elevation = self.sitting_baseline_y - cur_shoulder_y
-            span = max(0.14, self.profile.shoulder_elevation_span)
-            norm_height = np.clip(elevation / span, 0.0, 1.0)
-            metrics.posture_height_pct = round(norm_height * 100.0, 1)
-
-            # Factor 2: Upward Perspective Angle (Laptop camera points UP at standing user)
-            # When standing at desk, webcam points up at chin (pitch > +14 deg)
-            is_looking_up_at_ceiling = (head_pitch_detected > 14.0)
-
-            # Factor 3: Top Boundary Persistence (Head close to or crossing top edge)
-            is_head_at_top = (head_y < 0.14) or (cur_shoulder_y < 0.32)
-
-            # Factor 4: Scale Ratio (Standing back reduces shoulder width)
-            is_scale_shrunk = (cur_width < self.sitting_baseline_width * 0.78) and (cur_shoulder_y < 0.42)
-
-            # Multi-Rule Scoring Matrix
-            stand_score = 0.0
-            if norm_height >= 0.42:
-                stand_score += 0.40
-            if is_head_at_top:
-                stand_score += 0.35
-            if is_looking_up_at_ceiling:
-                stand_score += 0.25
-            if is_scale_shrunk:
-                stand_score += 0.20
-            if self.shoulder_vel_y < -0.35:
-                stand_score += 0.30 # Rising fast
-
-            self.standing_score_history.append(stand_score)
-            avg_stand_score = float(np.mean(list(self.standing_score_history)))
-            metrics.standing_confidence = round(avg_stand_score, 2)
-
-            # State Transition with Hysteresis
-            if self.shoulder_vel_y < -0.45:
-                metrics.posture_state = "TRANSITION_RISING"
-            elif self.shoulder_vel_y > 0.45:
-                metrics.posture_state = "TRANSITION_LOWERING"
-            elif avg_stand_score >= 0.48:
-                self.current_posture = "STANDING"
-                metrics.posture_state = "STANDING"
-            elif avg_stand_score <= 0.25:
-                self.current_posture = "SITTING"
-                metrics.posture_state = "SITTING"
-            else:
-                metrics.posture_state = self.current_posture
+            posture_state, elev_pct, conf = self.ensemble_classifier.update(
+                has_pose=has_pose,
+                shoulder_y=cur_shoulder_y,
+                shoulder_width=cur_width,
+                has_face=has_face,
+                head_y=head_y,
+                head_pitch=head_pitch_detected,
+                shoulder_velocity=self.shoulder_vel_y
+            )
+            metrics.posture_state = posture_state
+            metrics.posture_height_pct = elev_pct
+            metrics.standing_confidence = conf
 
         # --- 4. Hand & Gesture Proximity ---
         gesture_res = self.gesture_detector.recognize(mp_image)
@@ -343,25 +289,22 @@ class VisionTracker:
             metrics.confidence = 0.94
         elif metrics.hand_near_mouth and (metrics.jaw_open_score > 0.18 or self.chew_cycles > 2):
             metrics.primary_activity = "EATING_DRINKING"
-            metrics.confidence = 0.92
+            metrics.confidence = 0.93
             self.chew_cycles = max(0, self.chew_cycles - 1)
         elif metrics.hand_near_ear and abs(metrics.head_yaw) > 15.0:
             metrics.primary_activity = "PHONE_CALL"
-            metrics.confidence = 0.86
+            metrics.confidence = 0.88
         elif metrics.posture_state == "STANDING":
             metrics.primary_activity = "STANDING"
-            metrics.confidence = 0.94
-        elif metrics.posture_state.startswith("TRANSITION"):
-            metrics.primary_activity = metrics.posture_state
-            metrics.confidence = 0.85
+            metrics.confidence = 0.96
         elif metrics.attention_score < 40.0:
             metrics.primary_activity = "DISTRACTED_LOOKING_AWAY"
-            metrics.confidence = 0.84
+            metrics.confidence = 0.85
         elif metrics.hands_on_desk or metrics.attention_score >= 60.0:
             metrics.primary_activity = "SITTING_WORKING"
-            metrics.confidence = 0.93
+            metrics.confidence = 0.94
         else:
             metrics.primary_activity = "SITTING_PASSIVE"
-            metrics.confidence = 0.78
+            metrics.confidence = 0.80
 
         return metrics, debug_draw
