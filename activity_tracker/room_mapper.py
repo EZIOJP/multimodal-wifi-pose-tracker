@@ -1,14 +1,19 @@
 """
 WiFi Multi-Room House Mapping & RF Spatial Floorplan Engine.
-Maps human movement across architectural house zones (Office, Hallway, Living Room, Kitchen)
-using WiFi CSI spatial multi-path reflection profiles and trajectory mapping.
+Loads auto-scanned real rooms from config/house_rooms.json, or provides baseline rooms.
 """
 
+import os
+import json
 import time
 import math
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
+
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_DIR = os.path.join(CURRENT_DIR, "config")
+ROOMS_JSON_PATH = os.path.join(CONFIG_DIR, "house_rooms.json")
 
 @dataclass
 class RoomZone:
@@ -20,7 +25,7 @@ class RoomZone:
     z_max: float
     color_hex: int
     bgr_color: Tuple[int, int, int]
-    doors: List[Tuple[float, float]] = field(default_factory=list) # Doorway coordinates (x, z)
+    doors: List[Tuple[float, float]] = field(default_factory=list)
 
 @dataclass
 class SpatialHouseMapResult:
@@ -30,13 +35,54 @@ class SpatialHouseMapResult:
     pos_x: float
     pos_z: float
     distance_to_nearest_wall: float
-    occupancy_heatmap: Dict[str, float]  # Time % spent per room
+    is_auto_scanned: bool
+    occupancy_heatmap: Dict[str, float]
 
 class HouseRoomMapper:
     def __init__(self):
-        # Define realistic multi-room architectural floor plan
-        # Coordinates centered at Desk in the Office (0, 0)
-        self.rooms: Dict[str, RoomZone] = {
+        self.rooms: Dict[str, RoomZone] = {}
+        self.is_auto_scanned = False
+        self.time_spent = {}
+        self.last_update_time = time.time()
+        self.current_room_id = "office"
+        
+        self.load_rooms()
+
+    def load_rooms(self):
+        """Loads auto-scanned rooms from JSON if available, otherwise sets default"""
+        if os.path.exists(ROOMS_JSON_PATH):
+            try:
+                with open(ROOMS_JSON_PATH, "r") as f:
+                    data = json.load(f)
+                self.rooms = {}
+                for r_id, r in data.items():
+                    doors_list = [tuple(d) for d in r.get("doors", [])]
+                    bgr = tuple(r.get("bgr_color", (255, 220, 0)))
+                    self.rooms[r_id] = RoomZone(
+                        name=r["name"],
+                        id=r["id"],
+                        x_min=float(r["x_min"]),
+                        x_max=float(r["x_max"]),
+                        z_min=float(r["z_min"]),
+                        z_max=float(r["z_max"]),
+                        color_hex=int(r.get("color_hex", 0x00e5ff)),
+                        bgr_color=bgr,
+                        doors=doors_list
+                    )
+                self.is_auto_scanned = True
+                print(f"[House Mapper] Successfully loaded {len(self.rooms)} auto-scanned rooms from {ROOMS_JSON_PATH}")
+            except Exception as e:
+                print(f"[House Mapper Warning] Error reading {ROOMS_JSON_PATH}: {e}. Falling back to default layout.")
+                self._load_default_rooms()
+        else:
+            self._load_default_rooms()
+
+        self.time_spent = {r_id: 0.0 for r_id in self.rooms}
+        self.current_room_id = list(self.rooms.keys())[0] if self.rooms else "office"
+
+    def _load_default_rooms(self):
+        self.is_auto_scanned = False
+        self.rooms = {
             "office": RoomZone(
                 name="Home Office / Study",
                 id="office",
@@ -44,7 +90,7 @@ class HouseRoomMapper:
                 z_min=-1.2, z_max=1.5,
                 color_hex=0x00e5ff,
                 bgr_color=(255, 220, 0),
-                doors=[(0.0, 1.5)]  # Door connects to hallway at z=1.5
+                doors=[(0.0, 1.5)]
             ),
             "hallway": RoomZone(
                 name="Central Hallway",
@@ -53,7 +99,7 @@ class HouseRoomMapper:
                 z_min=1.5, z_max=3.2,
                 color_hex=0x9d4edd,
                 bgr_color=(220, 80, 160),
-                doors=[(0.0, 1.5), (1.4, 2.3), (-1.6, 2.3)] # Connects to Office, Living Room, Kitchen
+                doors=[(0.0, 1.5), (1.4, 2.3), (-1.6, 2.3)]
             ),
             "living_room": RoomZone(
                 name="Living Room",
@@ -74,28 +120,22 @@ class HouseRoomMapper:
                 doors=[(-1.6, 2.3)]
             )
         }
-        
-        self.time_spent = {r_id: 0.0 for r_id in self.rooms}
-        self.last_update_time = time.time()
-        self.current_room_id = "office"
 
     def update_location(self, x: float, z: float) -> SpatialHouseMapResult:
         now = time.time()
         dt = max(0.001, now - self.last_update_time)
         self.last_update_time = now
 
-        detected_room_id = "office"
+        detected_room_id = list(self.rooms.keys())[0] if self.rooms else "office"
         matched = False
 
-        # Find which room bounding box contains the coordinates
         for r_id, r in self.rooms.items():
             if r.x_min <= x <= r.x_max and r.z_min <= z <= r.z_max:
                 detected_room_id = r_id
                 matched = True
                 break
 
-        if not matched:
-            # Find closest room center
+        if not matched and self.rooms:
             min_dist = 999.0
             for r_id, r in self.rooms.items():
                 cx = (r.x_min + r.x_max) / 2.0
@@ -106,9 +146,10 @@ class HouseRoomMapper:
                     detected_room_id = r_id
 
         self.current_room_id = detected_room_id
+        if detected_room_id not in self.time_spent:
+            self.time_spent[detected_room_id] = 0.0
         self.time_spent[detected_room_id] += dt
 
-        # Distance to nearest wall of the current room
         cur_room = self.rooms[detected_room_id]
         dist_wall = min(
             abs(x - cur_room.x_min),
@@ -123,18 +164,15 @@ class HouseRoomMapper:
         return SpatialHouseMapResult(
             current_room=cur_room.name,
             room_id=cur_room.id,
-            room_confidence=0.92,
+            room_confidence=0.94 if self.is_auto_scanned else 0.85,
             pos_x=round(x, 2),
             pos_z=round(z, 2),
             distance_to_nearest_wall=round(dist_wall, 2),
+            is_auto_scanned=self.is_auto_scanned,
             occupancy_heatmap=heatmap
         )
 
     def get_floorplan_walls(self) -> List[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
-        """
-        Returns line segments (P1, P2) in 3D for architectural walls of the house.
-        Coordinates are (x, y, z) where y=floor level (-0.75m) and wall height is 1.1m.
-        """
         walls = []
         floor_y = -0.75
         wall_h = 0.85
@@ -146,17 +184,13 @@ class HouseRoomMapper:
                 (r.x_max, floor_y, r.z_max),
                 (r.x_min, floor_y, r.z_max)
             ]
-            
-            # Bottom wall lines
             for i in range(4):
                 c1 = corners[i]
                 c2 = corners[(i + 1) % 4]
                 walls.append((c1, c2))
-                # Top wall rim
                 t1 = (c1[0], floor_y + wall_h, c1[2])
                 t2 = (c2[0], floor_y + wall_h, c2[2])
                 walls.append((t1, t2))
-                # Vertical corner pillars
                 walls.append((c1, t1))
                 
         return walls
