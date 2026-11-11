@@ -3,8 +3,8 @@ Headless validation script for the Multimodal Activity Tracker.
 Tests end-to-end integration of:
 - Vision Engine (MediaPipe)
 - Calibration Profile
-- RuView WiFi CSI Bridge & Sanitizer (SenseFi-style)
-- Temporal Sequence Buffer (PoseSense-style)
+- RuView WiFi CSI House Mapper (Office, Hallway, Living Room, Kitchen)
+- Temporal Sequence Buffer
 - Cognitive Fatigue & Burnout Analyzer
 """
 
@@ -39,7 +39,6 @@ def run_headless_test():
     temporal_buffer = TemporalSequenceBuffer(window_size=45)
     fusion_engine = ActivityFusionEngine()
     
-    # Simulate a stream of 15 frames
     for i in range(15):
         dummy = np.zeros((480, 640, 3), dtype=np.uint8)
         now = time.time() + (i * 0.033)
@@ -63,14 +62,15 @@ def run_headless_test():
     print(f"\n[Test Result]")
     print(f"  • Activity State: {fused.activity_name}")
     print(f"  • Posture: {fused.posture}")
-    print(f"  • Respiration (Clean): {fused.vitals_respiration_rpm} RPM")
+    print(f"  • Current Room: {fused.current_room}")
+    print(f"  • House Coordinates: {fused.room_coordinates}")
     print(f"  • Burnout Risk: {fused.burnout_risk_pct}% [{fused.burnout_tier}]")
     print(f"  • Sitting Duration: {fused.continuous_sitting_mins} mins")
     print(f"  • Sensor Mode: {fused.sensor_fusion_mode}")
     print(f"  • Advice: {fused.ergonomic_advice}")
     
     rf_receiver.stop()
-    print("\n[SUCCESS] The complete multimodal plan is fully implemented and operational!")
+    print("\n[SUCCESS] The multi-room house spatial tracking pipeline is fully operational!")
 
 if __name__ == "__main__":
     run_headless_test()

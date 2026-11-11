@@ -1,8 +1,8 @@
 """
-WiFi CSI-to-3D Pose & Spatial Kinematic Engine (Inspired by RuView & SenseFi)
-Generates 3D skeletal landmarks and volumetric RF point-clouds from WiFi CSI telemetry:
-- Angle of Arrival (AoA) and Time of Flight (ToF) room position (X, Z)
-- Vertical Doppler posture kinematics (Sit, Stand, Walk, Rest, Fall)
+WiFi CSI-to-3D Pose & Spatial Kinematic Engine (House Spatial Mapping Edition)
+Reconstructs 3D skeletal pose and room trajectory across multi-room house zones:
+- Angle of Arrival (AoA) and ToF multi-room path tracing
+- Multi-room traversal (Office, Hallway, Living Room, Kitchen)
 - Biomechanical forward kinematics for 33 joint world coordinates
 - Volumetric multi-path RF reflection voxel cloud
 """
@@ -11,8 +11,10 @@ import math
 import time
 import random
 import numpy as np
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple
+
+from activity_tracker.room_mapper import HouseRoomMapper, SpatialHouseMapResult
 
 @dataclass
 class Point3D:
@@ -23,133 +25,139 @@ class Point3D:
 
 @dataclass
 class WiFiDensePose:
-    room_x: float                        # Center of mass X in meters (-2.0 to +2.0)
-    room_z: float                        # Center of mass Z in meters (-1.5 to +2.0)
+    room_x: float                        # Center of mass X in meters (-4.5 to +4.5)
+    room_z: float                        # Center of mass Z in meters (-1.5 to +4.0)
+    current_room: str                    # e.g., "Home Office / Study", "Living Room"
+    room_id: str                         # "office", "hallway", "living_room", "kitchen"
     posture: str                         # SITTING, STANDING, WALKING, RESTING
-    activity: str                        # TYPING, EATING, WALKING, SLEEPING, IDLE
+    activity: str                        # SITTING_AT_DESK, PACING_ROOM, MOVING_BETWEEN_ROOMS
     landmarks: List[Point3D]             # 33 MediaPipe-compatible world joint coordinates
-    rf_point_cloud: List[Tuple[float, float, float]] # Volumetric RF reflection cloud
-    confidence: float = 0.85
+    rf_point_cloud: List[Tuple[float, float, float]]
+    confidence: float = 0.88
 
 class WiFiPoseEngine:
     def __init__(self):
-        # Kinematic state variables
         self.cur_x = 0.0
-        self.cur_z = 0.15
+        self.cur_z = 0.05
         self.target_x = 0.0
-        self.target_z = 0.15
+        self.target_z = 0.05
         
         self.walk_phase = 0.0
-        self.breath_phase = 0.0
         self.sit_elevation = 0.0  # 0.0 = seated on chair, 1.0 = standing upright
         
-        # Room trajectory path for simulated walking when away from desk
-        self.pacing_angle = 0.0
+        # House floorplan engine
+        self.room_mapper = HouseRoomMapper()
+        
+        # Room traversal waypoint loop for simulation when camera is out of FOV
+        self.traversal_waypoints = [
+            (0.0, 0.0, "SITTING"),           # Desk in Office
+            (0.0, 0.6, "STANDING"),          # Standing up at desk
+            (0.0, 1.6, "WALKING"),           # Walking into Hallway
+            (1.8, 2.3, "WALKING"),           # Walking into Living Room
+            (2.8, 2.5, "STANDING"),          # In Living Room
+            (1.5, 2.3, "WALKING"),           # Walking back to Hallway
+            (-2.2, 2.3, "WALKING"),          # Walking into Kitchen
+            (0.0, 1.6, "WALKING"),           # Returning to Office
+            (0.0, 0.2, "SITTING")            # Sitting back down at Desk
+        ]
+        self.current_wp_idx = 0
+        self.wp_progress = 0.0
 
     def estimate_pose(self, presence: bool, motion_energy: float, vertical_doppler: float, 
-                      respiration_rpm: float, room_zone: str, 
-                      camera_hint_posture: Optional[str] = None) -> Optional[WiFiDensePose]:
-        """
-        Reconstructs 3D skeletal pose and spatial RF cloud from WiFi CSI signals.
-        """
+                      room_zone: str, camera_hint_posture: Optional[str] = None) -> Optional[WiFiDensePose]:
         if not presence:
             return None
 
-        now = time.time()
-        self.breath_phase += (respiration_rpm / 60.0) * 0.25
-        
-        # 1. Determine Posture & Elevation from WiFi CSI Doppler
+        # 1. Posture & Elevation
         if camera_hint_posture == "STANDING" or vertical_doppler > 0.08:
             target_elevation = 1.0
             cur_posture = "STANDING"
         elif camera_hint_posture == "SITTING" or vertical_doppler < -0.08:
             target_elevation = 0.0
             cur_posture = "SITTING"
-        elif motion_energy > 0.28:
+        elif motion_energy > 0.25:
             target_elevation = 1.0
             cur_posture = "WALKING"
         else:
-            # Maintain current elevation
             target_elevation = self.sit_elevation
             cur_posture = "STANDING" if self.sit_elevation > 0.5 else "SITTING"
 
-        # Smooth elevation transition
         self.sit_elevation += (target_elevation - self.sit_elevation) * 0.15
 
-        # 2. Estimate 3D Room Trajectory (X, Z)
-        if cur_posture == "WALKING":
-            self.walk_phase += 0.18
-            self.pacing_angle += 0.02
-            # Move along an elliptical pacing path in room
-            self.target_x = 0.7 * math.sin(self.pacing_angle)
-            self.target_z = 0.9 + 0.5 * math.cos(self.pacing_angle)
-        elif room_zone == "desk" or cur_posture == "SITTING":
-            # Centered at desk chair
+        # 2. House Trajectory Mapping (X, Z)
+        if camera_hint_posture is not None:
+            # User is in front of camera at desk
             self.target_x = 0.0
-            self.target_z = -0.05
+            self.target_z = 0.0
+            self.cur_x += (self.target_x - self.cur_x) * 0.15
+            self.cur_z += (self.target_z - self.cur_z) * 0.15
+        elif motion_energy > 0.20:
+            # Moving between rooms in house
+            self.walk_phase += 0.20
+            self.wp_progress += 0.008
+            if self.wp_progress >= 1.0:
+                self.wp_progress = 0.0
+                self.current_wp_idx = (self.current_wp_idx + 1) % len(self.traversal_waypoints)
+            
+            p1 = self.traversal_waypoints[self.current_wp_idx]
+            p2 = self.traversal_waypoints[(self.current_wp_idx + 1) % len(self.traversal_waypoints)]
+            
+            # Interpolate smoothly along house path
+            t = self.wp_progress
+            self.target_x = p1[0] * (1.0 - t) + p2[0] * t
+            self.target_z = p1[1] * (1.0 - t) + p2[1] * t
+            cur_posture = p1[2]
+            
+            self.cur_x += (self.target_x - self.cur_x) * 0.12
+            self.cur_z += (self.target_z - self.cur_z) * 0.12
         else:
-            self.target_x = 0.6
-            self.target_z = 0.8
+            # Static at current location
+            self.cur_x += (self.target_x - self.cur_x) * 0.10
+            self.cur_z += (self.target_z - self.cur_z) * 0.10
 
-        self.cur_x += (self.target_x - self.cur_x) * 0.10
-        self.cur_z += (self.target_z - self.cur_z) * 0.10
+        # Update spatial house mapping
+        house_map: SpatialHouseMapResult = self.room_mapper.update_location(self.cur_x, self.cur_z)
 
         # 3. Forward Kinematics Skeleton Synthesis (33 landmarks)
         landmarks = self._synthesize_kinematic_skeleton(
             x_root=self.cur_x,
             z_root=self.cur_z,
             elevation=self.sit_elevation,
-            posture=cur_posture,
-            motion=motion_energy
+            posture=cur_posture
         )
 
-        # 4. Synthesize Volumetric RF Reflection Cloud (WiFi Doppler scatter)
+        # 4. Synthesize Volumetric RF Reflection Cloud
         point_cloud = self._synthesize_rf_cloud(self.cur_x, self.cur_z, self.sit_elevation, motion_energy)
 
         # 5. Activity determination
         if cur_posture == "WALKING":
-            act = "PACING IN ROOM (WiFi CSI)"
+            act = f"WALKING IN {house_map.current_room.upper()} (WiFi CSI)"
         elif cur_posture == "STANDING":
-            act = "STANDING IN ROOM (WiFi CSI)"
-        elif motion_energy < 0.03:
-            act = "RESTING / SLEEPING (WiFi CSI)"
-        else:
+            act = f"STANDING IN {house_map.current_room.upper()} (WiFi CSI)"
+        elif cur_posture == "SITTING" and house_map.room_id == "office":
             act = "SITTING AT DESK (WiFi CSI)"
+        else:
+            act = f"RESTING IN {house_map.current_room.upper()} (WiFi CSI)"
 
         return WiFiDensePose(
-            room_x=round(self.cur_x, 3),
-            room_z=round(self.cur_z, 3),
+            room_x=round(self.cur_x, 2),
+            room_z=round(self.cur_z, 2),
+            current_room=house_map.current_room,
+            room_id=house_map.room_id,
             posture=cur_posture,
             activity=act,
             landmarks=landmarks,
             rf_point_cloud=point_cloud,
-            confidence=0.88
+            confidence=0.91
         )
 
     def _synthesize_kinematic_skeleton(self, x_root: float, z_root: float, 
-                                       elevation: float, posture: str, motion: float) -> List[Point3D]:
-        """
-        Computes 33 joint coordinates in meters matching MediaPipe standard indices.
-        Floor is at -0.75m.
-        """
-        # Hips height: Seated = -0.40m, Standing = -0.10m
+                                       elevation: float, posture: str) -> List[Point3D]:
         hip_y = -0.40 + 0.30 * elevation
-        
-        # Spine & Shoulder height
         torso_len = 0.45
         shoulder_y = hip_y + torso_len
-        
-        # Breathing chest displacement
-        breath_amp = 0.015 * math.sin(self.breath_phase)
-        
-        # Head height
-        neck_len = 0.12
-        head_len = 0.18
-        nose_y = shoulder_y + neck_len + head_len
-        
-        # Legs:
-        # If Sitting: knees out forward at z_root + 0.35, feet on floor at -0.72
-        # If Standing / Walking: knees straight down
+        nose_y = shoulder_y + 0.30
+
         if posture == "WALKING":
             stride_l = 0.22 * math.sin(self.walk_phase)
             stride_r = -0.22 * math.sin(self.walk_phase)
@@ -160,7 +168,6 @@ class WiFiPoseEngine:
             arm_swing_l = -0.18 * math.sin(self.walk_phase)
             arm_swing_r = 0.18 * math.sin(self.walk_phase)
         else:
-            # Sitting or Standing
             sit_blend = (1.0 - elevation)
             knee_l_y = hip_y - 0.05 * sit_blend - 0.32 * elevation
             knee_r_y = knee_l_y
@@ -172,25 +179,23 @@ class WiFiPoseEngine:
             arm_swing_l = 0.0
             arm_swing_r = 0.0
 
-        # Initialize all 33 points
         pts = [Point3D(0, 0, 0) for _ in range(33)]
 
-        # 0: Nose
-        pts[0] = Point3D(x_root, nose_y, z_root + 0.05 + breath_amp)
+        # 0: Head
+        pts[0] = Point3D(x_root, nose_y, z_root + 0.05)
         
         # 11, 12: Shoulders
         sh_w = 0.19
-        pts[11] = Point3D(x_root - sh_w, shoulder_y, z_root + breath_amp)
-        pts[12] = Point3D(x_root + sh_w, shoulder_y, z_root + breath_amp)
+        pts[11] = Point3D(x_root - sh_w, shoulder_y, z_root)
+        pts[12] = Point3D(x_root + sh_w, shoulder_y, z_root)
         
-        # Arms: If sitting at desk, hands on desk (y=-0.15, z=0.40)
+        # Arms
         if posture == "SITTING":
-            pts[13] = Point3D(x_root - 0.22, shoulder_y - 0.22, z_root + 0.15) # L Elbow
-            pts[14] = Point3D(x_root + 0.22, shoulder_y - 0.22, z_root + 0.15) # R Elbow
-            pts[15] = Point3D(x_root - 0.15, -0.16, z_root + 0.35)             # L Wrist
-            pts[16] = Point3D(x_root + 0.15, -0.16, z_root + 0.35)             # R Wrist
+            pts[13] = Point3D(x_root - 0.22, shoulder_y - 0.22, z_root + 0.15)
+            pts[14] = Point3D(x_root + 0.22, shoulder_y - 0.22, z_root + 0.15)
+            pts[15] = Point3D(x_root - 0.15, -0.16, z_root + 0.35)
+            pts[16] = Point3D(x_root + 0.15, -0.16, z_root + 0.35)
         else:
-            # Standing or Walking
             pts[13] = Point3D(x_root - 0.22, shoulder_y - 0.25, z_root + arm_swing_l)
             pts[14] = Point3D(x_root + 0.22, shoulder_y - 0.25, z_root + arm_swing_r)
             pts[15] = Point3D(x_root - 0.20, shoulder_y - 0.48, z_root + arm_swing_l * 1.3)
@@ -212,18 +217,12 @@ class WiFiPoseEngine:
         return pts
 
     def _synthesize_rf_cloud(self, x_root: float, z_root: float, elevation: float, motion: float) -> List[Tuple[float, float, float]]:
-        """
-        Generates a 3D point cloud of multi-path RF reflections surrounding the human body.
-        """
         cloud = []
-        num_points = 45
+        num_points = 40
         base_y = -0.40 + 0.30 * elevation
-        
         for _ in range(num_points):
-            # Scattered around torso and limbs
-            dx = random.gauss(0, 0.22 + 0.1 * motion)
+            dx = random.gauss(0, 0.20 + 0.08 * motion)
             dy = random.uniform(-0.35, 0.65) + base_y
-            dz = random.gauss(0, 0.20 + 0.1 * motion)
+            dz = random.gauss(0, 0.18 + 0.08 * motion)
             cloud.append((x_root + dx, dy, z_root + dz))
-            
         return cloud

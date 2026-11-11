@@ -1,6 +1,6 @@
 """
-FastAPI + WebSocket Server for 3D Digital Twin Web Visualizer.
-Streams real-time 3D skeletal landmarks (Camera OR WiFi CSI DensePose) to Three.js web clients.
+FastAPI + WebSocket Server for Multi-Room House 3D Digital Twin Web Visualizer.
+Streams real-time 3D skeletal landmarks, multi-room house localization, and trajectory data.
 """
 
 import os
@@ -21,12 +21,12 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from activity_tracker.ruview_bridge import RuViewReceiver
-from activity_tracker.vision_engine import VisionTracker
+from activity_tracker.vision_engine import VisionTracker, VisionMetrics
 from activity_tracker.fusion_engine import ActivityFusionEngine
 from activity_tracker.calibrator import CalibrationProfile
 from activity_tracker.temporal_buffer import TemporalSequenceBuffer
 
-app = FastAPI(title="3D Spatial Digital Twin Server")
+app = FastAPI(title="Multi-Room House 3D Digital Twin Server")
 
 connected_clients = set()
 latest_telemetry = {}
@@ -98,14 +98,11 @@ async def tracking_loop():
 
             rf_telemetry = rf_receiver.get_telemetry()
             
-            # Fuse
             if v_metrics:
                 fused = fusion_engine.fuse(v_metrics, rf_telemetry, temp_feat)
             else:
-                from activity_tracker.vision_engine import VisionMetrics
                 fused = fusion_engine.fuse(VisionMetrics(), rf_telemetry, None)
 
-            # Determine 3D landmarks source
             lm_list = []
             cloud_list = []
             tracking_source = "CAMERA"
@@ -115,7 +112,7 @@ async def tracking_loop():
                 for lm in v_metrics.world_landmarks:
                     lm_list.append({"x": round(lm.x, 3), "y": round(lm.y, 3), "z": round(lm.z, 3)})
             elif rf_telemetry.dense_pose and rf_telemetry.dense_pose.landmarks:
-                tracking_source = "WiFi CSI DensePose (Camera: Out of FOV)"
+                tracking_source = f"WiFi CSI SLAM: {fused.current_room}"
                 for lm in rf_telemetry.dense_pose.landmarks:
                     lm_list.append({"x": round(lm.x, 3), "y": round(lm.y, 3), "z": round(lm.z, 3)})
                 for pt in rf_telemetry.dense_pose.rf_point_cloud[:35]:
@@ -126,9 +123,11 @@ async def tracking_loop():
             latest_telemetry = {
                 "activity": fused.activity_name,
                 "posture": fused.posture,
+                "current_room": fused.current_room,
+                "room_id": fused.room_zone_id,
+                "coordinates": fused.room_coordinates,
                 "elevation": elev,
                 "attention": fused.attention_index,
-                "respiration": fused.vitals_respiration_rpm,
                 "burnout": fused.burnout_risk_pct,
                 "sitting_mins": fused.continuous_sitting_mins,
                 "source": tracking_source,
@@ -148,7 +147,7 @@ async def startup_event():
 
 if __name__ == "__main__":
     print("\n" + "=" * 60)
-    print("  3D SPATIAL DIGITAL TWIN WEB SERVER RUNNING")
+    print("  3D MULTI-ROOM HOUSE DIGITAL TWIN SERVER RUNNING")
     print("  Open in browser: http://localhost:8000")
     print("=" * 60 + "\n")
     uvicorn.run("activity_tracker.server_3d:app", host="0.0.0.0", port=8000, reload=False)

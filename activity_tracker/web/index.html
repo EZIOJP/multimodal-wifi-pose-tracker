@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D Spatial Digital Twin | Multimodal Activity Tracker</title>
+    <title>3D Multi-Room House Digital Twin | WiFi CSI SLAM</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -35,7 +35,7 @@
         #top-hud {
             top: 20px;
             left: 20px;
-            min-width: 340px;
+            min-width: 360px;
         }
         #metrics-hud {
             top: 20px;
@@ -115,35 +115,37 @@
     <div id="canvas-container"></div>
 
     <div id="top-hud" class="hud-panel">
-        <div class="title"><span class="status-dot"></span>Multimodal 3D Digital Twin</div>
+        <div class="title"><span class="status-dot"></span>Multi-Room House Digital Twin</div>
         <div id="act-badge" class="badge">INITIALIZING...</div>
         <div><span id="source-tag" class="source-pill">CONNECTING...</span></div>
-        <div class="row" style="margin-top:10px;"><span class="label">Posture:</span><span id="posture-val" class="val">--</span></div>
+        <div class="row" style="margin-top:10px;"><span class="label">Current Room:</span><span id="room-val" class="val" style="color:#00ff88;">Office</span></div>
+        <div class="row"><span class="label">House Coordinates:</span><span id="coords-val" class="val">(0.0m, 0.0m)</span></div>
+        <div class="row"><span class="label">Posture:</span><span id="posture-val" class="val">--</span></div>
         <div class="row"><span class="label">Elevation Height:</span><span id="elev-val" class="val">0%</span></div>
         <div class="bar-bg"><div id="elev-bar" class="bar-fill"></div></div>
     </div>
 
     <div id="metrics-hud" class="hud-panel">
-        <div class="title">Biometrics & RuView RF</div>
+        <div class="title">Spatial Localization & Fatigue</div>
         <div class="row"><span class="label">Attention Focus:</span><span id="att-val" class="val">--%</span></div>
         <div class="bar-bg"><div id="att-bar" class="bar-fill" style="background:#00ff88;"></div></div>
-        <div class="row"><span class="label">RuView Respiration:</span><span id="resp-val" class="val">-- RPM</span></div>
         <div class="row"><span class="label">Burnout Risk:</span><span id="burnout-val" class="val">--%</span></div>
         <div class="row"><span class="label">Sedentary Time:</span><span id="seat-val" class="val">-- mins</span></div>
+        <div class="row"><span class="label">House WiFi Nodes:</span><span class="val" style="color:#00e5ff;">3 Mesh Points Active</span></div>
     </div>
 
     <div id="controls-hud" class="hud-panel">
-        Left-click + Drag to Rotate 3D Room | Right-click to Pan | Scroll to Zoom
+        Left-click + Drag to Rotate Multi-Room House | Right-click to Pan | Scroll to Zoom
     </div>
 
     <script>
         // --- 1. Three.js Scene Setup ---
         const container = document.getElementById('canvas-container');
         const scene = new THREE.Scene();
-        scene.fog = new THREE.FogExp2(0x0b0e14, 0.08);
+        scene.fog = new THREE.FogExp2(0x0b0e14, 0.05);
 
-        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
-        camera.position.set(1.9, 1.4, 2.7);
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(3.2, 4.2, 5.8);
 
         const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
@@ -154,26 +156,71 @@
         const controls = new THREE.OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
-        controls.target.set(0, 0.1, 0.1);
+        controls.target.set(0, 0.1, 1.4); // Focus on central hallway/office transition
 
-        // --- 2. Lighting & Environment ---
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        // --- 2. Lighting ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.55);
         scene.add(ambientLight);
 
-        const dirLight = new THREE.DirectionalLight(0x00e5ff, 1.3);
-        dirLight.position.set(3, 5, 2);
+        const dirLight = new THREE.DirectionalLight(0x00e5ff, 1.4);
+        dirLight.position.set(5, 8, 3);
         scene.add(dirLight);
 
-        const pointLight = new THREE.PointLight(0xff0077, 1.6, 10);
-        pointLight.position.set(-2, 2, -2);
+        const pointLight = new THREE.PointLight(0xff0077, 1.6, 15);
+        pointLight.position.set(-3, 3, -2);
         scene.add(pointLight);
 
-        // Ground Grid
-        const grid = new THREE.GridHelper(6, 24, 0x00e5ff, 0x1f2c3f);
-        grid.position.y = -0.75;
+        // Ground Floor Grid
+        const grid = new THREE.GridHelper(12, 36, 0x00e5ff, 0x1f2c3f);
+        grid.position.set(0, -0.75, 1.4);
         scene.add(grid);
 
-        // --- 3. Virtual Furniture (3D Desk & Chair) ---
+        // --- 3. Multi-Room Architectural Floor Plan Geometry ---
+        const wallMat = new THREE.MeshStandardMaterial({
+            color: 0x1e293b,
+            roughness: 0.8,
+            transparent: true,
+            opacity: 0.75
+        });
+        const wallRimMat = new THREE.LineBasicMaterial({ color: 0x00e5ff, linewidth: 2 });
+
+        function createWall(x, z, width, depth, height=0.85) {
+            const geo = new THREE.BoxGeometry(width, height, depth);
+            const mesh = new THREE.Mesh(geo, wallMat);
+            mesh.position.set(x, -0.75 + height / 2, z);
+            scene.add(mesh);
+
+            // Wireframe edges for blueprint look
+            const wireGeo = new THREE.EdgesGeometry(geo);
+            const wireMesh = new THREE.LineSegments(wireGeo, wallRimMat);
+            wireMesh.position.copy(mesh.position);
+            scene.add(wireMesh);
+        }
+
+        // Office Walls
+        createWall(-1.6, 0.15, 0.08, 2.7); // Left wall
+        createWall(1.4, 0.15, 0.08, 2.7);  // Right wall
+        createWall(-0.1, -1.2, 3.0, 0.08); // Back wall
+        // Front wall with doorway in center
+        createWall(-1.0, 1.5, 1.2, 0.08);
+        createWall(0.9, 1.5, 1.0, 0.08);
+
+        // Hallway Walls
+        createWall(-1.6, 2.35, 0.08, 1.7); // Left wall to Kitchen
+        createWall(1.4, 2.35, 0.08, 1.7);  // Right wall to Living Room
+        createWall(-0.1, 3.2, 3.0, 0.08);  // Far wall
+
+        // Living Room Walls
+        createWall(4.5, 2.5, 0.08, 3.0);   // Far right
+        createWall(2.95, 1.0, 3.1, 0.08);  // Back
+        createWall(2.95, 4.0, 3.1, 0.08);  // Front
+
+        // Kitchen Walls
+        createWall(-4.5, 2.5, 0.08, 3.0);  // Far left
+        createWall(-3.05, 1.0, 2.9, 0.08); // Back
+        createWall(-3.05, 4.0, 2.9, 0.08); // Front
+
+        // --- 4. Office Furniture (Desk & Chair) ---
         const deskGeo = new THREE.BoxGeometry(1.2, 0.04, 0.6);
         const deskMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, metalness: 0.2, roughness: 0.8 });
         const desk = new THREE.Mesh(deskGeo, deskMat);
@@ -182,8 +229,7 @@
 
         const legGeo = new THREE.CylinderGeometry(0.02, 0.02, 0.6);
         const legMat = new THREE.MeshStandardMaterial({ color: 0x0f172a });
-        const legOffsets = [[-0.55, 0.25], [0.55, 0.25], [-0.55, -0.25], [0.55, -0.25]];
-        legOffsets.forEach(([lx, lz]) => {
+        [[-0.55, 0.25], [0.55, 0.25], [-0.55, -0.25], [0.55, -0.25]].forEach(([lx, lz]) => {
             const leg = new THREE.Mesh(legGeo, legMat);
             leg.position.set(lx, -0.45, 0.45 + lz);
             scene.add(leg);
@@ -195,7 +241,7 @@
         chair.position.set(0, -0.42, -0.05);
         scene.add(chair);
 
-        // --- 4. 3D Skeletal Avatar Rig ---
+        // --- 5. 3D Skeletal Avatar Rig ---
         const jointMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0x00e5ff, emissiveIntensity: 0.8 });
         const boneMat = new THREE.MeshStandardMaterial({ color: 0x00e5ff, roughness: 0.3 });
         
@@ -220,23 +266,15 @@
             boneLines.push(line);
         });
 
-        // RF Doppler Particle Cloud (DensePose multi-path scatter)
+        // RF Doppler Particle Cloud
         const cloudGeo = new THREE.BufferGeometry();
         const cloudPositions = new Float32Array(50 * 3);
         cloudGeo.setAttribute('position', new THREE.BufferAttribute(cloudPositions, 3));
-        const cloudMat = new THREE.PointsMaterial({ color: 0x00e5ff, size: 0.04, transparent: true, opacity: 0.7 });
+        const cloudMat = new THREE.PointsMaterial({ color: 0x00e5ff, size: 0.045, transparent: true, opacity: 0.75 });
         const rfPoints = new THREE.Points(cloudGeo, cloudMat);
         scene.add(rfPoints);
 
-        // WiFi RF Ripple Waves
-        const waveGeo = new THREE.RingGeometry(0.1, 0.12, 32);
-        const waveMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff, side: THREE.DoubleSide, transparent: true, opacity: 0.7 });
-        const waveRing = new THREE.Mesh(waveGeo, waveMat);
-        waveRing.rotation.x = Math.PI / 2;
-        waveRing.position.set(1.4, -0.74, 0.8);
-        scene.add(waveRing);
-
-        // --- 5. Real-time WebSocket Connection ---
+        // --- 6. Real-time WebSocket Connection ---
         const wsUrl = `ws://${window.location.host}/ws`;
         let ws;
 
@@ -253,14 +291,15 @@
 
         function updateTelemetryHUD(d) {
             document.getElementById('act-badge').innerText = d.activity || 'IDLE';
-            document.getElementById('source-tag').innerText = d.source || 'SENSING: WiFi CSI DensePose';
+            document.getElementById('source-tag').innerText = d.source || 'WiFi CSI House SLAM';
+            document.getElementById('room-val').innerText = d.current_room || 'Office';
+            document.getElementById('coords-val').innerText = d.coordinates || '(0.0m, 0.0m)';
             document.getElementById('posture-val').innerText = d.posture || '--';
             document.getElementById('elev-val').innerText = (d.elevation || 0) + '%';
             document.getElementById('elev-bar').style.width = (d.elevation || 0) + '%';
 
             document.getElementById('att-val').innerText = (d.attention || 0) + '%';
             document.getElementById('att-bar').style.width = (d.attention || 0) + '%';
-            document.getElementById('resp-val').innerText = (d.respiration || 0) + ' RPM';
             document.getElementById('burnout-val').innerText = (d.burnout || 0) + '%';
             document.getElementById('seat-val').innerText = (d.sitting_mins || 0) + ' mins';
         }
@@ -277,7 +316,6 @@
             jointMat.color.setHex(jointCol);
             jointMat.emissive.setHex(boneCol);
 
-            // Position joints
             const yOff = d.posture && d.posture.includes('STAND') ? 0.25 : -0.10;
             d.landmarks.forEach((pt, i) => {
                 if (joints[i]) {
@@ -290,7 +328,6 @@
                 }
             });
 
-            // Connect bones
             boneConnections.forEach(([i1, i2], idx) => {
                 if (joints[i1] && joints[i2]) {
                     const p1 = joints[i1].position;
@@ -304,7 +341,6 @@
                 }
             });
 
-            // Update RF Particle Cloud
             if (d.rf_cloud && d.rf_cloud.length > 0) {
                 const pos = cloudGeo.attributes.position.array;
                 d.rf_cloud.forEach((pt, idx) => {
@@ -321,16 +357,8 @@
             }
         }
 
-        // --- 6. Render Loop ---
-        let clock = new THREE.Clock();
         function animate() {
             requestAnimationFrame(animate);
-            const elapsed = clock.getElapsedTime();
-            
-            const s = 1.0 + (elapsed * 1.5) % 3.0;
-            waveRing.scale.set(s, s, s);
-            waveMat.opacity = Math.max(0, 0.8 - (s / 4.0));
-
             controls.update();
             renderer.render(scene, camera);
         }

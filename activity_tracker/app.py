@@ -1,6 +1,6 @@
 """
 Multimodal Human Activity, Posture (Sit/Stand), and Attention Recognition HUD
-with Real-Time 3D Spatial Digital Twin Room Environment (Vision + WiFi CSI DensePose).
+with Real-Time 3D Multi-Room House Floor Plan & WiFi CSI DensePose Mapping.
 """
 
 import sys
@@ -31,7 +31,7 @@ def draw_hud(frame, v_metrics, rf_telemetry, fused, debug_draw, fps, profile):
     # 1. Top Header Bar
     cv2.rectangle(overlay, (0, 0), (w, 85), (20, 24, 30), -1)
     # 2. Left Stats Card
-    cv2.rectangle(overlay, (15, 95), (290, 475), (20, 24, 30), -1)
+    cv2.rectangle(overlay, (15, 95), (300, 480), (20, 24, 30), -1)
     # 3. Bottom Info Bar
     cv2.rectangle(overlay, (0, h - 35), (w, h), (15, 18, 22), -1)
     
@@ -48,34 +48,34 @@ def draw_hud(frame, v_metrics, rf_telemetry, fused, debug_draw, fps, profile):
         badge_color = (0, 215, 255)       # Amber Gold
     elif "SLEEPING" in act_name:
         badge_color = (50, 50, 255)       # Red
-    elif "PACING" in act_name or "WiFi CSI" in act_name:
-        badge_color = (0, 240, 255)       # Electric Cyan (WiFi DensePose)
+    elif "WALKING" in act_name or "WiFi CSI" in act_name:
+        badge_color = (0, 240, 255)       # Electric Cyan (WiFi House SLAM)
     elif "SLOUCHING" in act_name:
         badge_color = (0, 140, 255)       # Orange
     else:
         badge_color = (180, 180, 180)     # Gray
         
     cv2.putText(frame, "ACTIVITY:", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (160, 170, 185), 1)
-    cv2.putText(frame, act_name, (110, 32), cv2.FONT_HERSHEY_DUPLEX, 0.75, badge_color, 2)
+    cv2.putText(frame, act_name, (110, 32), cv2.FONT_HERSHEY_DUPLEX, 0.72, badge_color, 2)
     
     conf_str = f"CONFIDENCE: {int(fused.confidence * 100)}%"
     cv2.putText(frame, conf_str, (20, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 230, 200), 1)
     
-    mode_tag = "CAMERA IN FOV" if v_metrics.is_present else "WiFi CSI DENSEPOSE (Camera Blindspot)"
+    mode_tag = "CAMERA IN FOV" if v_metrics.is_present else "WiFi CSI HOUSE SLAM (Camera Blindspot)"
     mode_col = (0, 240, 120) if v_metrics.is_present else (0, 220, 255)
-    cv2.putText(frame, f"TRACKER: {mode_tag}", (175, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.40, mode_col, 1)
+    cv2.putText(frame, f"TRACKER: {mode_tag}", (175, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.38, mode_col, 1)
     cv2.putText(frame, f"FPS: {fps:.1f}", (w - 100, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 180), 1)
 
     # --- Left Card: Detailed Gauges ---
     y_card = 120
     
     # A. Posture Indicator (Sit vs Stand)
-    cv2.putText(frame, "POSTURE (Sit / Stand)", (30, y_card), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (220, 220, 220), 1)
+    cv2.putText(frame, "POSTURE (Sit / Stand / Walk)", (30, y_card), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (220, 220, 220), 1)
     posture_text = fused.posture
-    posture_color = (255, 200, 0) if "STAND" in posture_text else (0, 220, 100)
+    posture_color = (255, 200, 0) if "STAND" in posture_text or "WALK" in posture_text else (0, 220, 100)
     cv2.putText(frame, posture_text, (30, y_card + 24), cv2.FONT_HERSHEY_DUPLEX, 0.65, posture_color, 2)
     
-    h_bar_x, h_bar_y, h_bar_w, h_bar_h = 30, y_card + 33, 230, 9
+    h_bar_x, h_bar_y, h_bar_w, h_bar_h = 30, y_card + 33, 240, 9
     cv2.rectangle(frame, (h_bar_x, h_bar_y), (h_bar_x + h_bar_w, h_bar_y + h_bar_h), (50, 55, 65), -1)
     fill_w = int(h_bar_w * (v_metrics.posture_height_pct / 100.0))
     cv2.rectangle(frame, (h_bar_x, h_bar_y), (h_bar_x + fill_w, h_bar_y + h_bar_h), posture_color, -1)
@@ -88,8 +88,8 @@ def draw_hud(frame, v_metrics, rf_telemetry, fused, debug_draw, fps, profile):
     att_val = fused.attention_index
     att_color = (0, 240, 120) if att_val >= 60 else ((0, 180, 255) if att_val >= 35 else (60, 60, 255))
     cv2.putText(frame, f"{att_val:.1f}%", (30, y_card + 23), cv2.FONT_HERSHEY_DUPLEX, 0.65, att_color, 2)
-    cv2.rectangle(frame, (30, y_card + 33), (260, y_card + 42), (50, 55, 65), -1)
-    cv2.rectangle(frame, (30, y_card + 33), (30 + int(230 * (att_val / 100.0)), y_card + 42), att_color, -1)
+    cv2.rectangle(frame, (30, y_card + 33), (270, y_card + 42), (50, 55, 65), -1)
+    cv2.rectangle(frame, (30, y_card + 33), (30 + int(240 * (att_val / 100.0)), y_card + 42), att_color, -1)
 
     # C. Cognitive Burnout & Sedentary Fatigue
     y_card += 68
@@ -97,9 +97,9 @@ def draw_hud(frame, v_metrics, rf_telemetry, fused, debug_draw, fps, profile):
     b_val = fused.burnout_risk_pct
     b_color = (60, 60, 255) if b_val >= 70 else ((0, 180, 255) if b_val >= 40 else (0, 230, 120))
     cv2.putText(frame, f"{b_val:.0f}% [{fused.burnout_tier}]", (30, y_card + 23), cv2.FONT_HERSHEY_DUPLEX, 0.62, b_color, 2)
-    cv2.rectangle(frame, (30, y_card + 33), (260, y_card + 42), (50, 55, 65), -1)
-    cv2.rectangle(frame, (30, y_card + 33), (30 + int(230 * (b_val / 100.0)), y_card + 42), b_color, -1)
-    cv2.putText(frame, f"Seated: {fused.continuous_sitting_mins:.1f} mins", (165, y_card + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1)
+    cv2.rectangle(frame, (30, y_card + 33), (270, y_card + 42), (50, 55, 65), -1)
+    cv2.rectangle(frame, (30, y_card + 33), (30 + int(240 * (b_val / 100.0)), y_card + 42), b_color, -1)
+    cv2.putText(frame, f"Seated: {fused.continuous_sitting_mins:.1f} mins", (170, y_card + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1)
 
     # D. Drowsiness / Sleep Tracker
     y_card += 68
@@ -111,15 +111,13 @@ def draw_hud(frame, v_metrics, rf_telemetry, fused, debug_draw, fps, profile):
         cv2.putText(frame, f"Eyes Closed: {v_metrics.eye_closed_duration:.1f}s", (100, y_card + 22),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 100, 255), 1)
 
-    # E. RuView WiFi CSI Vitals & Room Coordinates
+    # E. Multi-Room House Localization & Coordinates (Replaces Breathing)
     y_card += 58
-    cv2.putText(frame, "RUVIEW RF VITALS & DENSEPOSE", (30, y_card), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 220, 255), 1)
-    vitals_str = f"Resp: {fused.vitals_respiration_rpm} RPM"
-    if rf_telemetry.dense_pose:
-        vitals_str += f" | Room Pos: ({rf_telemetry.dense_pose.room_x:+.1f}m, {rf_telemetry.dense_pose.room_z:+.1f}m)"
-    cv2.putText(frame, vitals_str, (30, y_card + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (230, 230, 240), 1)
-    rf_status = "ONLINE [ESP32 CSI]" if rf_telemetry.connected else "WiFi CSI DensePose Active"
-    cv2.putText(frame, rf_status, (30, y_card + 37), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (140, 160, 180), 1)
+    cv2.putText(frame, "HOUSE LOCALIZATION (WiFi CSI SLAM)", (30, y_card), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 220, 255), 1)
+    room_str = f"Room: {fused.current_room}"
+    cv2.putText(frame, room_str, (30, y_card + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (240, 240, 255), 1)
+    pos_str = f"Coords: {fused.room_coordinates} | Zone: {fused.room_zone_id.upper()}"
+    cv2.putText(frame, pos_str, (30, y_card + 37), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (140, 210, 255), 1)
 
     # Vision Landmarks Overlay
     if debug_draw["shoulders"] is not None:
@@ -144,13 +142,13 @@ def draw_hud(frame, v_metrics, rf_telemetry, fused, debug_draw, fps, profile):
 
 def run_tracker(camera_index=0):
     print("=" * 65)
-    print("  Multimodal Activity, Posture & Attention Recognition System")
-    print("  Webcam Vision + RuView WiFi CSI DensePose + 3D Spatial Twin")
+    print("  Multimodal Activity, Posture & Multi-Room House Mapping System")
+    print("  Webcam Vision + RuView WiFi CSI House SLAM + 3D Twin")
     print("=" * 65)
     
     profile = CalibrationProfile.load()
     
-    print("[1/5] Initializing RuView WiFi CSI Bridge & DensePose Engine...")
+    print("[1/5] Initializing RuView WiFi CSI Bridge & Multi-Room Engine...")
     rf_receiver = RuViewReceiver(udp_port=8888)
     rf_receiver.start()
     
@@ -161,10 +159,10 @@ def run_tracker(camera_index=0):
     print("[3/5] Initializing 45-frame Temporal Sequence Buffer...")
     temporal_buffer = TemporalSequenceBuffer(window_size=45)
     
-    print("[4/5] Initializing Sensor Fusion Engine & Fatigue Analyzer...")
+    print("[4/5] Initializing Sensor Fusion Engine & House Mapper...")
     fusion_engine = ActivityFusionEngine()
     
-    print("[5/5] Initializing 3D Spatial Environment Engine...")
+    print("[5/5] Initializing 3D Architectural House Environment Engine...")
     visualizer_3d = Spatial3DVisualizer(width=640, height=720)
     
     view_mode = 0
@@ -218,16 +216,15 @@ def run_tracker(camera_index=0):
             )
             rf_telemetry = rf_receiver.get_telemetry()
             
-            # Step D: Multimodal Fusion
+            # Step D: Multimodal Fusion with House Localization
             fused_state = fusion_engine.fuse(v_metrics, rf_telemetry, temp_feat)
             
-            # Step E: Render 3D Spatial Digital Twin (Optical OR WiFi CSI DensePose)
+            # Step E: Render 3D Multi-Room Architectural Floor Plan & Avatar
             canvas_3d = visualizer_3d.render(
                 optical_landmarks=v_metrics.world_landmarks,
                 wifi_dense_pose=rf_telemetry.dense_pose,
                 posture=fused_state.posture,
                 activity=fused_state.activity_name,
-                resp_rpm=fused_state.vitals_respiration_rpm,
                 attention_score=fused_state.attention_index,
                 is_camera_active=v_metrics.is_present
             )
@@ -242,14 +239,14 @@ def run_tracker(camera_index=0):
             else:
                 display_frame = cv2.resize(frame_resized, (1280, 720))
             
-            cv2.imshow("Multimodal Activity Tracker (RuView + Vision + 3D Twin)", display_frame)
+            cv2.imshow("Multimodal Activity Tracker (RuView House SLAM + Vision)", display_frame)
             
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q') or key == ord('Q'):
                 break
             elif key == ord('v') or key == ord('V'):
                 view_mode = (view_mode + 1) % 3
-                modes = ["Split-Screen Dual View", "3D Digital Twin Fullscreen", "Camera Feed Only"]
+                modes = ["Split-Screen Dual View", "3D Multi-Room Fullscreen", "Camera Feed Only"]
                 print(f"[View Mode] Switched to: {modes[view_mode]}")
             elif key == ord('a') or key == ord('A'):
                 visualizer_3d.set_camera_rotation(delta_yaw=-8.0)
